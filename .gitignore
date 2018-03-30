@@ -1,0 +1,9 @@
+*.pyc
+*.sw[op]
+__pycache__/
+
+results*
+summary*
+datasets/*
+
+!datasets/README*
