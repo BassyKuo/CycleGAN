@@ -1,0 +1,5 @@
+--no-cache-dir https://github.com/mind/wheels/releases/download/tf1.4-gpu/tensorflow-1.4.0-cp36-cp36m-linux_x86_64.whl
+numpy==1.13.3
+scipy
+termcolor
+progress

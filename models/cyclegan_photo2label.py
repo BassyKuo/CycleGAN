@@ -189,7 +189,7 @@ class CYCLEGAN_PHOTO2LABEL:
         source_images_batch    = tf.image.resize_bilinear(source_images_batch, config['resize'])  #A: 3 chaanels
         source_segments_batch  = tf.image.resize_nearest_neighbor(source_segments_batch, config['resize'])  #B: 1-label channels
 
-        source_segments_batch_1_channel = source_images_batch
+        source_segments_batch_1_channel = source_segments_batch
 
         source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
         source_segments_batch  = tf.cast(tf.one_hot(tf.squeeze(source_segments_batch, -1), depth=num_labels), tf.float32) * 2. - 1. #B: 19 channels
