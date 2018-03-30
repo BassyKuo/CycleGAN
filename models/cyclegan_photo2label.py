@@ -108,12 +108,12 @@ class CYCLEGAN_PHOTO2LABEL:
         options = OPTIONS._make((first_hidden_dim, output_channel, phase_train))
         net, raw_output = CycleG_resnet(inputs, options, reuse, scope)
         outputs = {
-                'output':   net,
+                'tanh':   net,
                 'raw':      raw_output,
                 'softmax':  tf.nn.softmax(raw_output, dim=-1),
                 'endpoints':tf.get_collection(outputs_collections)
                 }
-        return outputs['softmax']
+        return outputs['raw']
 
 
     @staticmethod
@@ -186,8 +186,8 @@ class CYCLEGAN_PHOTO2LABEL:
         source_images_batch    = data_queue[0][0]  #A: 3 chaanels
         source_segments_batch  = data_queue[0][1]  #B: 1-label channels
 
-        source_images_batch    = tf.image.resize_bilinear(source_images_batch, resize)  #A: 3 chaanels
-        source_segments_batch  = tf.image.resize_nearest_neighbor(source_segments_batch, resize)  #B: 1-label channels
+        source_images_batch    = tf.image.resize_bilinear(source_images_batch, config['resize'])  #A: 3 chaanels
+        source_segments_batch  = tf.image.resize_nearest_neighbor(source_segments_batch, config['resize'])  #B: 1-label channels
 
         source_segments_batch_1_channel = source_images_batch
 
@@ -212,11 +212,13 @@ class CYCLEGAN_PHOTO2LABEL:
             # ---[ Generator A2B & B2A
             with tf.device('/device:GPU:{}'.format((gid-1) % config['gpus'])):
                 fake_seg  = generator(source_images_batch, output_channel=num_labels, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
-                fake_seg = fake_seg * 2 - 1
+                fake_seg  = tf.nn.softmax(fake_seg) * 2 - 1
                 fake_img_ = generator(fake_seg, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
+                fake_img_ = tf.nn.tanh(fake_img_)
                 fake_img  = generator(source_segments_batch, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
+                fake_img  = tf.nn.tanh(fake_img)
                 fake_seg_ = generator(fake_img, output_channel=num_labels, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
-                fake_seg_ = fake_seg_ * 2. - 1.
+                fake_seg_ = tf.nn.softmax(fake_seg_) * 2 - 1
 
             # ---[ Discriminator A & B
             with tf.device('/device:GPU:{}'.format((gid-1) % config['gpus'])):

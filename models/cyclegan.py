@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 '''
-CycleGAN for photo2labels
+CycleGAN for RGB2RGB (basic)
 '''
 import tensorflow as tf                 # tf.__version__ : 1.4
 import tensorflow.contrib.slim as slim
@@ -30,11 +30,12 @@ GpuConfig.gpu_options.allow_growth=True
 
 class CYCLEGAN:
     def __init__(self, 
-            source_dataset              = 'datasets/cityscape/:list.txt',
-            bs                          = 2,
+            source_dataset              = 'datasets/cityscape/:list_color.txt',
+            bs                          = 12,
             crop_size                   = '713,713',
+            resize                      = '256,256',
             print_epoch                 = 100,
-            max_epoch                   = 100000,
+            max_epoch                   = 200000,
             g_lr                        = 0.0002,
             d_lr                        = 0.0002,
             g_epoch                     = 1,
@@ -46,7 +47,7 @@ class CYCLEGAN:
             result_dir                  = 'results',
             summary_dir                 = 'summary',
             suffix                      = 'r1.0-sce_loss', 
-            name                        = 'CycleGAN-photo2labels',
+            name                        = 'CycleGAN-rgb2rgb',
             **kwargs):
 
         self.pretrain_D_epoch           = -1
@@ -56,6 +57,7 @@ class CYCLEGAN:
         self.source_data                = dict(data_dir=source_dataset[0], data_list=os.path.join(*source_dataset))
         self.batch_size                 = bs
         self.crop_size                  = [int(n) for n in crop_size.split(',')]
+        self.resize                     = [int(n) for n in resize.split(',')]
         self.print_epoch                = print_epoch
         self.max_epoch                  = max_epoch
         self.g_lr                       = float('%.0e' % g_lr)
@@ -104,12 +106,12 @@ class CYCLEGAN:
         options = OPTIONS._make((first_hidden_dim, output_channel, phase_train))
         net, raw_output = CycleG_resnet(inputs, options, reuse, scope)
         outputs = {
-                'output':   net,
+                'tanh':     net,    #output: -1 ~ 1
                 'raw':      raw_output,
                 'softmax':  tf.nn.softmax(raw_output, dim=-1),
                 'endpoints':tf.get_collection(outputs_collections)
                 }
-        return outputs['softmax']
+        return outputs['tanh']
 
 
     @staticmethod
@@ -134,8 +136,8 @@ class CYCLEGAN:
 
     def build(self):
         config = self.__dict__.copy()
-        num_labels      = 19    #for segmentation (pixel labels)
-        ignore_label    = 255   #for segmentation (pixel labels)
+        #num_labels      = 19    #for segmentation (pixel labels)
+        #ignore_label    = 255   #for segmentation (pixel labels)
         #num_classes     = 2     #for classification (images labels)
         random_seed     = 1234
         generator       = self.resnetG
@@ -175,16 +177,20 @@ class CYCLEGAN:
                     config['crop_size'],
                     random_scale=True,
                     random_mirror=True,
-                    ignore_label=ignore_label,
+                    ignore_label=None,
                     img_mean=IMG_MEAN,
-                    coord=coord)
+                    coord=coord,
+                    rgb_label=True)
                 data_queue.append(reader.dequeue(config['batch_size']))
 
         source_images_batch    = data_queue[0][0]  #A: 3 chaanels
-        source_segments_batch  = data_queue[0][1]  #B: 19 channels
+        source_segments_batch  = data_queue[0][1]  #B: 3 channels
+
+        source_images_batch    = tf.image.resize_bilinear(source_images_batch, config['resize'])
+        source_segments_batch  = tf.image.resize_bilinear(source_segments_batch, config['resize'])
 
         source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
-        source_segments_batch  = tf.cast(tf.one_hot(tf.squeeze(source_segments_batch, -1), depth=num_labels), tf.float32) * 2. - 1.
+        source_segments_batch  = tf.cast(source_segments_batch, tf.float32) / 127.5 - 1.
 
 
         size_list = cuttool(config['batch_size'], config['gpus'])
@@ -202,16 +208,14 @@ class CYCLEGAN:
         for gid, (source_images_batch, source_segments_batch) in \
                 enumerate(zip(source_images_batches, source_segments_batches)):
             # ---[ Generator A2B & B2A
-            with tf.device('/device:GPU:{}'.format((2+gid) % config['gpus'])):
-                fake_seg  = generator(source_images_batch, output_channel=num_labels, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
-                fake_seg = fake_seg * 2 - 1
+            with tf.device('/device:GPU:{}'.format((gid-1) % config['gpus'])):
+                fake_seg  = generator(source_images_batch, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
                 fake_img_ = generator(fake_seg, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
                 fake_img  = generator(source_segments_batch, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
-                fake_seg_ = generator(fake_img, output_channel=num_labels, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
-                fake_seg_ = fake_seg_ * 2. - 1.
+                fake_seg_ = generator(fake_img, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
 
             # ---[ Discriminator A & B
-            with tf.device('/device:GPU:{}'.format((2+gid) % config['gpus'])):
+            with tf.device('/device:GPU:{}'.format((gid-1) % config['gpus'])):
                 d_real_img = discriminator(source_images_batch,   reuse=tf.AUTO_REUSE, phase_train=True, scope=DIS_A_NAME)
                 d_fake_img = discriminator(fake_img, reuse=tf.AUTO_REUSE, phase_train=True, scope=DIS_A_NAME)
                 d_real_seg = discriminator(source_segments_batch, reuse=tf.AUTO_REUSE, phase_train=True, scope=DIS_B_NAME)
@@ -230,8 +234,8 @@ class CYCLEGAN:
                 d_real_seg_output [gid]       = d_real_seg
                 d_fake_seg_output [gid]       = d_fake_seg
 
-        source_images_batch    = tf.concat(source_images_batches, axis=0)   #0~255
-        source_segments_batch  = tf.concat(source_segments_batches, axis=0) #onehot
+        source_images_batch    = tf.concat(source_images_batches, axis=0)   #-1~1
+        source_segments_batch  = tf.concat(source_segments_batches, axis=0) #-1~1
         fake_1_segments_output = tf.concat(fake_1_segments_output, axis=0)  ;   print('fake_1_segments_output', fake_1_segments_output)
         fake_2_segments_output = tf.concat(fake_2_segments_output, axis=0)  ;   print('fake_2_segments_output', fake_2_segments_output)
         fake_1_images_output   = tf.concat(fake_1_images_output  , axis=0)  ;   print('fake_1_images_output  ', fake_1_images_output  )
@@ -241,9 +245,12 @@ class CYCLEGAN:
         d_real_seg_output      = tf.concat(d_real_seg_output , axis=0)
         d_fake_seg_output      = tf.concat(d_fake_seg_output , axis=0)
 
-        source_segments_batch_color  = sgtools.decode_labels(tf.cast(data_queue[0][1], tf.int32),  num_labels)   # draw colors
-        fake_1_segments_output_color = sgtools.decode_labels(tf.cast(convert_to_labels(fake_1_segments_output), tf.int32),  num_labels)    # draw colors
-        fake_2_segments_output_color = sgtools.decode_labels(tf.cast(convert_to_labels(fake_2_segments_output), tf.int32),  num_labels)    # draw colors
+        source_images_batch_color    = tf.cast( 255.99/2 * (1+source_images_batch   ), tf.int32)
+        source_segments_batch_color  = tf.cast( 255.99/2 * (1+source_segments_batch ), tf.int32)
+        fake_1_segments_output_color = tf.cast( 255.99/2 * (1+fake_1_segments_output), tf.int32)
+        fake_2_segments_output_color = tf.cast( 255.99/2 * (1+fake_2_segments_output), tf.int32)
+        fake_1_images_output_color   = tf.cast( 255.99/2 * (1+fake_1_images_output  ), tf.int32)
+        fake_2_images_output_color   = tf.cast( 255.99/2 * (1+fake_2_images_output  ), tf.int32)
 
         # ---[ Segment-level loss: pixelwise loss
         # d_seg_batch = tf.image.resize_nearest_neighbor(seg_gt, tf.shape(_d_real['segment'])[1:3])
@@ -447,9 +454,9 @@ class CYCLEGAN:
                     writer.add_summary(save_summarys, iters)
                 # output samples
                 if epo % 5 == 0:
-                    #for i in range(256):   print ("%3d:   seg_n_gt:%10d seg_n_gen:%10d" % (i, (seg_n_gt==i).sum(), (seg_n_gen==i).sum()))
-                    seg_gt, seg_1, seg_2 = sess.run([source_segments_batch_color, fake_1_segments_output_color, fake_2_segments_output_color], feed_dict=feeds)
-                    img_gt, img_1, img_2 = sess.run([source_images_batch, fake_1_images_output, fake_2_images_output], feed_dict=feeds)
+                    seg_gt, seg_1, seg_2, img_gt, img_1, img_2 = \
+                            sess.run([source_segments_batch_color, fake_1_segments_output_color, fake_2_segments_output_color,
+                                      source_images_batch_color, fake_1_images_output_color, fake_2_images_output_color], feed_dict=feeds)
                     seg_output = np.concatenate([seg_gt, seg_2, seg_1], axis=0)
                     img_output = np.concatenate([img_gt, img_2, img_1], axis=0)
                     save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'seg-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])

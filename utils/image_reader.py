@@ -18,50 +18,30 @@ def image_scaling(img, label):
     w_new = tf.to_int32(tf.multiply(tf.to_float(tf.shape(img)[-2]), scale))
     new_shape = tf.squeeze(tf.stack([h_new, w_new]), squeeze_dims=[1])
     img = tf.image.resize_images(img, new_shape)
-    if len(label.shape) == 4:
-        label = tf.image.resize_nearest_neighbor(label, new_shape)
-    else:
-        label = tf.image.resize_nearest_neighbor(tf.expand_dims(label, 0), new_shape)
-        label = tf.squeeze(label, squeeze_dims=[0])
+    label = tf.image.resize_nearest_neighbor(tf.expand_dims(label, 0), new_shape)
+    label = tf.squeeze(label, squeeze_dims=[0])
     return img, label
 
-def random_crop_and_pad_image_and_labels(image, label, crop_h, crop_w, ignore_label=255, batch_size=None):
-    if batch_size:
-        label = tf.cast(label, dtype=tf.float32)
+def random_crop_and_pad_image_and_labels(image, label, crop_h, crop_w, image_channel=3, label_channel=1, ignore_label=255):
+    label = tf.cast(label, dtype=tf.float32)
+    if ignore_label:
         label = label - ignore_label # Needs to be subtracted and later added due to 0 padding.
-        combined = tf.concat(axis=-1, values=[image, label])
-        image_shape = tf.shape(image)[-3:]
-        combined_pad = tf.image.pad_to_bounding_box(combined, 0, 0, tf.maximum(crop_h, image_shape[0]), tf.maximum(crop_w, image_shape[1]))
+    combined = tf.concat(axis=-1, values=[image, label])
+    image_shape = tf.shape(image)[-3:]
+    combined_pad = tf.image.pad_to_bounding_box(combined, 0, 0, tf.maximum(crop_h, image_shape[0]), tf.maximum(crop_w, image_shape[1]))
 
-        last_image_dim = tf.shape(image)[-1]
-        last_label_dim = tf.shape(label)[-1]
-        combined_crop = tf.random_crop(combined_pad, [batch_size,crop_h,crop_w,4])
-        img_crop = combined_crop[..., :last_image_dim]
-        label_crop = combined_crop[..., last_image_dim:]
+    last_image_dim = tf.shape(image)[-1]
+    last_label_dim = tf.shape(label)[-1]
+    combined_crop = tf.random_crop(combined_pad, [crop_h,crop_w,int(image_channel+label_channel)])
+    img_crop = combined_crop[..., :last_image_dim]
+    label_crop = combined_crop[..., last_image_dim:]
+    if ignore_label:
         label_crop = label_crop + ignore_label
         label_crop = tf.cast(label_crop, dtype=tf.uint8)
 
-        # Set static shape so that tensorflow knows shape at compile time.
-        img_crop.set_shape((batch_size, crop_h, crop_w, 3))
-        label_crop.set_shape((batch_size, crop_h,crop_w, 1))
-    else:
-        label = tf.cast(label, dtype=tf.float32)
-        label = label - ignore_label # Needs to be subtracted and later added due to 0 padding.
-        combined = tf.concat(axis=-1, values=[image, label])
-        image_shape = tf.shape(image)[-3:]
-        combined_pad = tf.image.pad_to_bounding_box(combined, 0, 0, tf.maximum(crop_h, image_shape[0]), tf.maximum(crop_w, image_shape[1]))
-
-        last_image_dim = tf.shape(image)[-1]
-        last_label_dim = tf.shape(label)[-1]
-        combined_crop = tf.random_crop(combined_pad, [crop_h,crop_w,4])
-        img_crop = combined_crop[..., :last_image_dim]
-        label_crop = combined_crop[..., last_image_dim:]
-        label_crop = label_crop + ignore_label
-        label_crop = tf.cast(label_crop, dtype=tf.uint8)
-
-        # Set static shape so that tensorflow knows shape at compile time.
-        img_crop.set_shape((crop_h, crop_w, 3))
-        label_crop.set_shape((crop_h,crop_w, 1))
+    # Set static shape so that tensorflow knows shape at compile time.
+    img_crop.set_shape((crop_h, crop_w, image_channel))
+    label_crop.set_shape((crop_h,crop_w, label_channel))
     return img_crop, label_crop
 
 def read_labeled_image_list(data_dir, data_list):
@@ -88,17 +68,20 @@ def read_labeled_image_list(data_dir, data_list):
 
     return images, masks
 
-def read_images_from_disk(input_queue, input_size, random_scale, random_mirror, ignore_label, img_mean): # optional pre-processing arguments
+def read_images_from_disk(input_queue, input_size, random_scale, random_mirror, img_mean, image_channel=3, label_channel=1, ignore_label=255): # optional pre-processing arguments
     img_contents = tf.read_file(input_queue[0])
     label_contents = tf.read_file(input_queue[1])
 
-    img = tf.image.decode_jpeg(img_contents, channels=3)
-    img_r, img_g, img_b = tf.split(axis=-1, num_or_size_splits=3, value=img)
+    img = tf.image.decode_jpeg(img_contents, channels=image_channel)
+    img_r, img_g, img_b = tf.split(axis=-1, num_or_size_splits=image_channel, value=img)
     img = tf.cast(tf.concat(axis=-1, values=[img_b, img_g, img_r]), dtype=tf.float32)
     # Extract mean.
     img -= img_mean
 
-    label = tf.image.decode_png(label_contents, channels=1)
+    if label_channel == 1:
+        label = tf.image.decode_png(label_contents, channels=label_channel)
+    else:
+        label = tf.image.decode_jpeg(label_contents, channels=label_channel)
 
     if input_size is not None:
         h, w = input_size
@@ -109,7 +92,7 @@ def read_images_from_disk(input_queue, input_size, random_scale, random_mirror, 
         if random_mirror:
             img, label = image_mirroring(img, label)
             
-        img, label = random_crop_and_pad_image_and_labels(img, label, h, w, ignore_label)
+        img, label = random_crop_and_pad_image_and_labels(img, label, h, w, image_channel=image_channel, label_channel=label_channel, ignore_label=ignore_label)
 
     return img, label
 
@@ -119,7 +102,7 @@ class ImageReader(object):
     '''
 
     def __init__(self, data_dir, data_list, input_size,
-                  random_scale, random_mirror, ignore_label, img_mean, coord):
+                  random_scale, random_mirror, ignore_label, img_mean, coord, rgb_label=False):
 
         self.data_dir = data_dir
         self.data_list = data_list
@@ -131,7 +114,10 @@ class ImageReader(object):
         self.labels = tf.convert_to_tensor(self.label_list, dtype=tf.string)
         self.queue = tf.train.slice_input_producer([self.images, self.labels],
                                                    shuffle=input_size is not None) # not shuffling if it is val
-        self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, ignore_label, img_mean)
+        if rgb_label:
+            self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, img_mean, label_channel=3, ignore_label=None)
+        else:
+            self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, img_mean, label_channel=1, ignore_label=ignore_label)
 
     def dequeue(self, num_elements):
         image_batch, label_batch = tf.train.batch([self.image, self.label],

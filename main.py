@@ -14,7 +14,7 @@ GpuConfig.gpu_options.allow_growth=True
 #GpuConfig.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
 
 
-MODEL_NAME = 'cyclegan-photo2labels'
+MODEL_NAME = 'cyclegan'
 
 # ---[ Args
 def get_arguments():
@@ -31,15 +31,15 @@ def get_arguments():
                                             type=str,  default=None,
                                             help="<data_dir>:<list_filename> [%(default)s]")
 
-    parser.add_argument("--bs",             type=int,  default=2,
+    parser.add_argument("--bs",             type=int,  default=12,
                                             help="[%(default)s]")
     parser.add_argument("--crop_size",      type=str,  default='713,713',
                                             help="[%(default)s]")
     parser.add_argument("--resize",         type=str,  default='256,256',
                                             help="[%(default)s]")
-    parser.add_argument("--print_epoch",    type=int,  default=500,
+    parser.add_argument("--print_epoch",    type=int,  default=100,
                                             help="[%(default)s]")
-    parser.add_argument("--max_epoch",      type=int,  default=100000,
+    parser.add_argument("--max_epoch",      type=int,  default=200000,
                                             help="[%(default)s]")
     parser.add_argument("--g_lr",           type=float,  default=0.0002,
                                             help="[%(default)s]")
