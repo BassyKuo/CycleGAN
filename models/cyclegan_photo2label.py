@@ -32,7 +32,8 @@ class CYCLEGAN_PHOTO2LABEL:
     def __init__(self, 
             source_dataset              = 'datasets/cityscape/:list.txt',
             bs                          = 12,
-            crop_size                   = '256,256',
+            crop_size                   = '713,713',
+            resize                      = '256,256',
             num_labels                  = 19,
             print_epoch                 = 100,
             max_epoch                   = 100000,
@@ -58,6 +59,7 @@ class CYCLEGAN_PHOTO2LABEL:
         self.batch_size                 = bs
         self.num_labels                 = num_labels
         self.crop_size                  = [int(n) for n in crop_size.split(',')]
+        self.resize                     = [int(n) for n in resize.split(',')]
         self.print_epoch                = print_epoch
         self.max_epoch                  = max_epoch
         self.g_lr                       = float('%.0e' % g_lr)
@@ -182,10 +184,15 @@ class CYCLEGAN_PHOTO2LABEL:
                 data_queue.append(reader.dequeue(config['batch_size']))
 
         source_images_batch    = data_queue[0][0]  #A: 3 chaanels
-        source_segments_batch  = data_queue[0][1]  #B: 19 channels
+        source_segments_batch  = data_queue[0][1]  #B: 1-label channels
+
+        source_images_batch    = tf.image.resize_bilinear(source_images_batch, resize)  #A: 3 chaanels
+        source_segments_batch  = tf.image.resize_nearest_neighbor(source_segments_batch, resize)  #B: 1-label channels
+
+        source_segments_batch_1_channel = source_images_batch
 
         source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
-        source_segments_batch  = tf.cast(tf.one_hot(tf.squeeze(source_segments_batch, -1), depth=num_labels), tf.float32) * 2. - 1.
+        source_segments_batch  = tf.cast(tf.one_hot(tf.squeeze(source_segments_batch, -1), depth=num_labels), tf.float32) * 2. - 1. #B: 19 channels
 
 
         size_list = cuttool(config['batch_size'], config['gpus'])
@@ -242,7 +249,7 @@ class CYCLEGAN_PHOTO2LABEL:
         d_real_seg_output      = tf.concat(d_real_seg_output , axis=0)
         d_fake_seg_output      = tf.concat(d_fake_seg_output , axis=0)
 
-        source_segments_batch_color  = sgtools.decode_labels(tf.cast(data_queue[0][1], tf.int32),  num_labels)   # draw colors
+        source_segments_batch_color  = sgtools.decode_labels(tf.cast(source_segments_batch_1_channel, tf.int32),  num_labels)   # draw colors
         fake_1_segments_output_color = sgtools.decode_labels(tf.cast(convert_to_labels(fake_1_segments_output), tf.int32),  num_labels)    # draw colors
         fake_2_segments_output_color = sgtools.decode_labels(tf.cast(convert_to_labels(fake_2_segments_output), tf.int32),  num_labels)    # draw colors
 

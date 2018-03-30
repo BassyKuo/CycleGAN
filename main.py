@@ -35,6 +35,8 @@ def get_arguments():
                                             help="[%(default)s]")
     parser.add_argument("--crop_size",      type=str,  default='713,713',
                                             help="[%(default)s]")
+    parser.add_argument("--resize",         type=str,  default='256,256',
+                                            help="[%(default)s]")
     parser.add_argument("--print_epoch",    type=int,  default=500,
                                             help="[%(default)s]")
     parser.add_argument("--max_epoch",      type=int,  default=100000,

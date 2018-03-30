@@ -8,13 +8,14 @@ python3 main.py PHOTO2LABEL --crop_size '256,256' --gpus 1
 
 ## Models
 
-[ ] CycleGAN - basic (x)
-[x] CycleGAN - photo2label
-    [x] cityscape
-    [ ] ade
+- [ ] CycleGAN - basic
+- [x] CycleGAN - photo2label
+    - [x] cityscape
+    - [ ] ade
 
 
 ## References
 
-https://github.com/xhujoy/CycleGAN-tensorflow
-https://github.com/DrSleep/tensorflow-deeplab-resnet
+1. https://github.com/junyanz/CycleGAN
+2. https://github.com/xhujoy/CycleGAN-tensorflow
+3. https://github.com/DrSleep/tensorflow-deeplab-resnet
