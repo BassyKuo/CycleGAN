@@ -34,9 +34,10 @@ class CYCLEGAN_PHOTO2LABEL:
             bs                          = 12,
             crop_size                   = '713,713',
             resize                      = '256,256',
+            random_scale                = True,
             num_labels                  = 19,
             print_epoch                 = 100,
-            max_epoch                   = 100000,
+            max_epoch                   = 200000,
             g_lr                        = 0.0002,
             d_lr                        = 0.0002,
             g_epoch                     = 1,
@@ -60,6 +61,7 @@ class CYCLEGAN_PHOTO2LABEL:
         self.num_labels                 = num_labels
         self.crop_size                  = [int(n) for n in crop_size.split(',')]
         self.resize                     = [int(n) for n in resize.split(',')]
+        self.random_scale               = random_scale
         self.print_epoch                = print_epoch
         self.max_epoch                  = max_epoch
         self.g_lr                       = float('%.0e' % g_lr)
@@ -108,7 +110,7 @@ class CYCLEGAN_PHOTO2LABEL:
         options = OPTIONS._make((first_hidden_dim, output_channel, phase_train))
         net, raw_output = CycleG_resnet(inputs, options, reuse, scope)
         outputs = {
-                'tanh':   net,
+                'tanh':     net,    #output: -1 ~ 1
                 'raw':      raw_output,
                 'softmax':  tf.nn.softmax(raw_output, dim=-1),
                 'endpoints':tf.get_collection(outputs_collections)
@@ -175,24 +177,26 @@ class CYCLEGAN_PHOTO2LABEL:
                 reader = ImageReader(
                     data['data_dir'],
                     data['data_list'],
-                    config['crop_size'],
-                    random_scale=True,
+                    config['crop_size'],                    # Original size: [1024, 2048]
+                    random_scale=config['random_scale'],
                     random_mirror=True,
                     ignore_label=ignore_label,
-                    img_mean=IMG_MEAN,
-                    coord=coord)
+                    img_mean=0,                             # set IMG_MEAN to centralize image pixels (set NONE for automatic choosing)
+                    img_channel_format='RGB',               # Default: BGR in deeplab_v2. See here: https://github.com/zhengyang-wang/Deeplab-v2--ResNet-101--Tensorflow/issues/30
+                    coord=coord,
+                    rgb_label=False)
                 data_queue.append(reader.dequeue(config['batch_size']))
 
         source_images_batch    = data_queue[0][0]  #A: 3 chaanels
         source_segments_batch  = data_queue[0][1]  #B: 1-label channels
 
+        source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
+
         source_images_batch    = tf.image.resize_bilinear(source_images_batch, config['resize'])  #A: 3 chaanels
         source_segments_batch  = tf.image.resize_nearest_neighbor(source_segments_batch, config['resize'])  #B: 1-label channels
 
         source_segments_batch_1_channel = source_segments_batch
-
-        source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
-        source_segments_batch  = tf.cast(tf.one_hot(tf.squeeze(source_segments_batch, -1), depth=num_labels), tf.float32) * 2. - 1. #B: 19 channels
+        source_segments_batch  = tf.cast(tf.one_hot(tf.squeeze(source_segments_batch, -1), depth=num_labels), tf.float32) - 0.5 #B: 19 channels
 
 
         size_list = cuttool(config['batch_size'], config['gpus'])
@@ -212,13 +216,13 @@ class CYCLEGAN_PHOTO2LABEL:
             # ---[ Generator A2B & B2A
             with tf.device('/device:GPU:{}'.format((gid-1) % config['gpus'])):
                 fake_seg  = generator(source_images_batch, output_channel=num_labels, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
-                fake_seg  = tf.nn.softmax(fake_seg) * 2 - 1
+                fake_seg  = tf.nn.softmax(fake_seg) - 0.5
                 fake_img_ = generator(fake_seg, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
                 fake_img_ = tf.nn.tanh(fake_img_)
                 fake_img  = generator(source_segments_batch, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
                 fake_img  = tf.nn.tanh(fake_img)
                 fake_seg_ = generator(fake_img, output_channel=num_labels, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
-                fake_seg_ = tf.nn.softmax(fake_seg_) * 2 - 1
+                fake_seg_ = tf.nn.softmax(fake_seg_) - 0.5
 
             # ---[ Discriminator A & B
             with tf.device('/device:GPU:{}'.format((gid-1) % config['gpus'])):
@@ -230,9 +234,9 @@ class CYCLEGAN_PHOTO2LABEL:
                 #d_fake_seg_val = discriminator(fake_seg_val, reuse=tf.AUTO_REUSE, phase_train=False, scope=DIS_B_NAME)
 
 
-                fake_1_segments_output [gid]  = fake_seg
-                fake_2_segments_output [gid]  = fake_seg_
-                fake_1_images_output [gid]    = fake_img
+                fake_1_segments_output [gid]  = fake_seg    + 0.5
+                fake_2_segments_output [gid]  = fake_seg_   + 0.5
+                fake_1_images_output [gid]    = fake_img 
                 fake_2_images_output [gid]    = fake_img_
 
                 d_real_img_output [gid]       = d_real_img
@@ -240,8 +244,8 @@ class CYCLEGAN_PHOTO2LABEL:
                 d_real_seg_output [gid]       = d_real_seg
                 d_fake_seg_output [gid]       = d_fake_seg
 
-        source_images_batch    = tf.concat(source_images_batches, axis=0)   #0~255
-        source_segments_batch  = tf.concat(source_segments_batches, axis=0) #onehot
+        source_images_batch    = tf.concat(source_images_batches, axis=0)   #-1~1
+        source_segments_batch  = tf.concat(source_segments_batches, axis=0) #onehot: -0.5~+0.5
         fake_1_segments_output = tf.concat(fake_1_segments_output, axis=0)  ;   print('fake_1_segments_output', fake_1_segments_output)
         fake_2_segments_output = tf.concat(fake_2_segments_output, axis=0)  ;   print('fake_2_segments_output', fake_2_segments_output)
         fake_1_images_output   = tf.concat(fake_1_images_output  , axis=0)  ;   print('fake_1_images_output  ', fake_1_images_output  )
@@ -251,9 +255,12 @@ class CYCLEGAN_PHOTO2LABEL:
         d_real_seg_output      = tf.concat(d_real_seg_output , axis=0)
         d_fake_seg_output      = tf.concat(d_fake_seg_output , axis=0)
 
+        source_images_batch_color    = (1.+source_images_batch   ) / 2.
         source_segments_batch_color  = sgtools.decode_labels(tf.cast(source_segments_batch_1_channel, tf.int32),  num_labels)   # draw colors
         fake_1_segments_output_color = sgtools.decode_labels(tf.cast(convert_to_labels(fake_1_segments_output), tf.int32),  num_labels)    # draw colors
         fake_2_segments_output_color = sgtools.decode_labels(tf.cast(convert_to_labels(fake_2_segments_output), tf.int32),  num_labels)    # draw colors
+        fake_1_images_output_color   = (1.+fake_1_images_output  ) / 2.
+        fake_2_images_output_color   = (1.+fake_2_images_output  ) / 2.
 
         # ---[ Segment-level loss: pixelwise loss
         # d_seg_batch = tf.image.resize_nearest_neighbor(seg_gt, tf.shape(_d_real['segment'])[1:3])
@@ -285,7 +292,8 @@ class CYCLEGAN_PHOTO2LABEL:
 
         # ---[ GAN loss: sigmoid BCE loss
         _img_recovery = config['L1_lambda'] * tf.reduce_mean(tf.abs(source_images_batch - fake_2_images_output))
-        _seg_recovery = config['L1_lambda'] * tf.reduce_mean(tf.abs(source_segments_batch - fake_1_segments_output))
+        _seg_recovery = config['L1_lambda'] * tf.reduce_mean(tf.abs(source_segments_batch - fake_1_segments_output))   #r1.0
+        #_seg_recovery = config['L1_lambda'] * tf.reduce_mean(tf.abs(source_segments_batch_color - fake_1_segments_output_color))    #r1.0.5: not sure because, in theory, no gradient if using decode_labels()
 
         g_loss_a2b = \
                 tf.reduce_mean( tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_fake_seg_output), logits=d_fake_seg_output) ) + \
@@ -459,7 +467,13 @@ class CYCLEGAN_PHOTO2LABEL:
                 if epo % 5 == 0:
                     seg_gt, seg_1, seg_2, img_gt, img_1, img_2 = \
                             sess.run([source_segments_batch_color, fake_1_segments_output_color, fake_2_segments_output_color,
-                                      source_images_batch, fake_1_images_output, fake_2_images_output], feed_dict=feeds)
+                                      source_images_batch_color, fake_1_images_output_color, fake_2_images_output_color], feed_dict=feeds)
+                    #print ("Range %10s:" % "seg_gt", seg_gt.min(), seg_gt.max())
+                    #print ("Range %10s:" % "seg_1", seg_1.min(), seg_1.max())
+                    #print ("Range %10s:" % "seg_2", seg_2.min(), seg_2.max())
+                    #print ("Range %10s:" % "img_gt", img_gt.min(), img_gt.max())
+                    #print ("Range %10s:" % "img_1", img_1.min(), img_1.max())
+                    #print ("Range %10s:" % "img_2", img_2.min(), img_2.max())
                     seg_output = np.concatenate([seg_gt, seg_2, seg_1], axis=0)
                     img_output = np.concatenate([img_gt, img_2, img_1], axis=0)
                     save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'seg-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])

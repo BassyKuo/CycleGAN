@@ -3,6 +3,11 @@ import os
 import numpy as np
 import tensorflow as tf
 
+IMG_MEAN = {
+        'r':   123.68, 
+        'g':   116.779, 
+        'b':   103.939}   # RGB, refer to https://github.com/zhengyang-wang/Deeplab-v2--ResNet-101--Tensorflow/issues/30
+
 def image_mirroring(img, label):
     distort_left_right_random = tf.random_uniform([1], 0, 1.0, dtype=tf.float32)[0]
     mirror = tf.less(tf.stack([1.0, distort_left_right_random, 1.0]), 0.5)
@@ -68,14 +73,29 @@ def read_labeled_image_list(data_dir, data_list):
 
     return images, masks
 
-def read_images_from_disk(input_queue, input_size, random_scale, random_mirror, img_mean, image_channel=3, label_channel=1, ignore_label=255): # optional pre-processing arguments
+def read_images_from_disk(input_queue, input_size, random_scale, random_mirror, img_mean, image_channel=3, img_channel_format='BGR', label_channel=1, ignore_label=255): # optional pre-processing arguments
     img_contents = tf.read_file(input_queue[0])
     label_contents = tf.read_file(input_queue[1])
 
     img = tf.image.decode_jpeg(img_contents, channels=image_channel)
     img_r, img_g, img_b = tf.split(axis=-1, num_or_size_splits=image_channel, value=img)
-    img = tf.cast(tf.concat(axis=-1, values=[img_b, img_g, img_r]), dtype=tf.float32)
+    if img_channel_format.lower() == 'bgr':
+        img = tf.cast(tf.concat(axis=-1, values=[img_b, img_g, img_r]), dtype=tf.float32)
+    elif img_channel_format.lower() == 'brg':
+        img = tf.cast(tf.concat(axis=-1, values=[img_b, img_r, img_g]), dtype=tf.float32)
+    elif img_channel_format.lower() == 'gbr':
+        img = tf.cast(tf.concat(axis=-1, values=[img_g, img_b, img_r]), dtype=tf.float32)
+    elif img_channel_format.lower() == 'grb':
+        img = tf.cast(tf.concat(axis=-1, values=[img_g, img_r, img_b]), dtype=tf.float32)
+    elif img_channel_format.lower() == 'rgb':
+        img = tf.cast(tf.concat(axis=-1, values=[img_r, img_g, img_b]), dtype=tf.float32)
+    elif img_channel_format.lower() == 'rbg':
+        img = tf.cast(tf.concat(axis=-1, values=[img_r, img_b, img_g]), dtype=tf.float32)
+    else:
+        raise NameError("No support %s format." % img_channel_format)
     # Extract mean.
+    if img_mean is None:
+        img_mean = np.array([IMG_MEAN[k] for k in img_channel_format.lower()], dtype=np.float32)
     img -= img_mean
 
     if label_channel == 1:
@@ -102,7 +122,7 @@ class ImageReader(object):
     '''
 
     def __init__(self, data_dir, data_list, input_size,
-                  random_scale, random_mirror, ignore_label, img_mean, coord, rgb_label=False):
+                  random_scale, random_mirror, ignore_label, img_mean, coord, img_channel_format='BGR', rgb_label=False):
 
         self.data_dir = data_dir
         self.data_list = data_list
@@ -115,9 +135,9 @@ class ImageReader(object):
         self.queue = tf.train.slice_input_producer([self.images, self.labels],
                                                    shuffle=input_size is not None) # not shuffling if it is val
         if rgb_label:
-            self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, img_mean, label_channel=3, ignore_label=None)
+            self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, img_mean, img_channel_format=img_channel_format, label_channel=3, ignore_label=None)
         else:
-            self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, img_mean, label_channel=1, ignore_label=ignore_label)
+            self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale, random_mirror, img_mean, img_channel_format=img_channel_format, label_channel=1, ignore_label=ignore_label)
 
     def dequeue(self, num_elements):
         image_batch, label_batch = tf.train.batch([self.image, self.label],

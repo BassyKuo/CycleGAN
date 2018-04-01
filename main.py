@@ -37,6 +37,9 @@ def get_arguments():
                                             help="[%(default)s]")
     parser.add_argument("--resize",         type=str,  default='256,256',
                                             help="[%(default)s]")
+    parser.add_argument("--random_scale",   type=str2bool, default=True,
+                                            help="[%(default)s]")
+
     parser.add_argument("--print_epoch",    type=int,  default=100,
                                             help="[%(default)s]")
     parser.add_argument("--max_epoch",      type=int,  default=200000,
@@ -63,13 +66,23 @@ def get_arguments():
                                             help="[%(default)s]")
     parser.add_argument("--name",           type=str,  default=None,
                                             help="[%(default)s]")
+    #parser.add_argument("--train",         action="store_true",            # `store_true`: default=False, `store_false`: default=True
+                                            #help="[%(default)s]")           ; parser.set_defaults(random_scale=True)
     return parser.parse_args()
+
+def str2bool(v):
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def main():
     args = get_arguments()
     config = args.__dict__
     config['bs'] = max(config['bs'], 1)
-    keys = [k for k in config.keys() if not config[k]]
+    keys = [k for k in config.keys() if config[k] is None or config[k] == '']
     for k in keys:
         del config[k]
 
