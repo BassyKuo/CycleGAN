@@ -27,9 +27,12 @@ def get_arguments():
     parser.add_argument("model", type=str, choices=models.__list, 
                                             help="model choices. [%(default)s]")
 
-    parser.add_argument("--source_dataset", 
+    parser.add_argument("--train_dataset", 
                                             type=str,  default=None,
                                             help="<data_dir>:<list_filename> [%(default)s]")
+    parser.add_argument("--val_dataset", 
+                                            type=str,  default=None, nargs='+',
+                                            help="<data_dir>:<list_filename> <data_dir>:<list_filename> ... [%(default)s]")
 
     parser.add_argument("--bs",             type=int,  default=12,
                                             help="[%(default)s]")

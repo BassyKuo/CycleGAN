@@ -30,7 +30,8 @@ GpuConfig.gpu_options.allow_growth=True
 
 class CYCLEGAN:
     def __init__(self, 
-            source_dataset              = 'datasets/cityscape/:list_color.txt',
+            train_dataset               = 'datasets/cityscape/:list_color.txt',
+            val_dataset                 = ['datasets/cityscape/:list_color_val.txt'],
             bs                          = 12,
             crop_size                   = '713,713',
             resize                      = '256,256',
@@ -47,15 +48,17 @@ class CYCLEGAN:
             num_threads                 = 32,
             result_dir                  = 'results',
             summary_dir                 = 'summary',
-            suffix                      = 'r1.0-sce_loss', 
+            suffix                      = 'r1.1.0-sce_loss.tr_and_val', 
             name                        = 'CycleGAN-rgb2rgb',
             **kwargs):
 
         self.pretrain_D_epoch           = -1
 
-        source_dataset = source_dataset.split(':')
+        train_dataset = train_dataset.split(':')
+        val_dataset   = [dataset.split(':') for dataset in val_dataset]
 
-        self.source_data                = dict(data_dir=source_dataset[0], data_list=os.path.join(*source_dataset))
+        self.source_data                = dict(data_dir=train_dataset[0], data_list=os.path.join(*train_dataset))
+        self.target_data                = [dict(data_dir=data[0], data_list=os.path.join(*data)) for data in val_dataset]
         self.batch_size                 = bs
         self.crop_size                  = [int(n) for n in crop_size.split(',')]
         self.resize                     = [int(n) for n in resize.split(',')]
@@ -168,11 +171,11 @@ class CYCLEGAN:
             fake_segments_output = tf.expand_dims(fake_segments_output, dim=-1) # Create 4-d tensor.
             return fake_segments_output
 
-        data_queue = []
+        target_data_queue = []
         tf.set_random_seed(random_seed)
         coord = tf.train.Coordinator()
         with tf.name_scope("create_inputs"):
-            for data in [config['source_data']]:
+            for i, data in enumerate([config['source_data']] + config['target_data']):
                 reader = ImageReader(
                     data['data_dir'],
                     data['data_list'],
@@ -184,16 +187,31 @@ class CYCLEGAN:
                     img_channel_format='RGB',               # Default: BGR in deeplab_v2. See here: https://github.com/zhengyang-wang/Deeplab-v2--ResNet-101--Tensorflow/issues/30
                     coord=coord,
                     rgb_label=True)
-                data_queue.append(reader.dequeue(config['batch_size']))
+                data_queue = reader.dequeue(config['batch_size'])
 
-        source_images_batch    = data_queue[0][0]  #A: 3 chaanels
-        source_segments_batch  = data_queue[0][1]  #B: 3 channels
+                if i == 0:
+                    # ---[ source: training data
+                    source_images_batch    = data_queue[0]  #A: 3 chaanels
+                    source_segments_batch  = data_queue[1]  #B: 3 channels
 
-        source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
-        source_segments_batch  = tf.cast(source_segments_batch, tf.float32) / 127.5 - 1.
+                    source_images_batch    = tf.cast(source_images_batch, tf.float32) / 127.5 - 1.
+                    source_segments_batch  = tf.cast(source_segments_batch, tf.float32) / 127.5 - 1.
 
-        source_images_batch    = tf.image.resize_bilinear(source_images_batch, config['resize'])
-        source_segments_batch  = tf.image.resize_bilinear(source_segments_batch, config['resize'])
+                    source_images_batch    = tf.image.resize_bilinear(source_images_batch, config['resize'])
+                    source_segments_batch  = tf.image.resize_bilinear(source_segments_batch, config['resize'])
+
+                else:
+                    # ---[ target: validation data / testing data
+                    target_images_batch    = data_queue[0]  #A: 3 chaanels
+                    target_segments_batch  = data_queue[1]  #B: 3 channels
+
+                    target_images_batch    = tf.cast(target_images_batch, tf.float32) / 127.5 - 1.
+                    target_segments_batch  = tf.cast(target_segments_batch, tf.float32) / 127.5 - 1.
+
+                    target_images_batch    = tf.image.resize_bilinear(target_images_batch, config['resize'])
+                    target_segments_batch  = tf.image.resize_bilinear(target_segments_batch, config['resize'])
+
+                    target_data_queue.append([target_images_batch, target_segments_batch])
 
 
         size_list = cuttool(config['batch_size'], config['gpus'])
@@ -248,12 +266,32 @@ class CYCLEGAN:
         d_real_seg_output      = tf.concat(d_real_seg_output , axis=0)
         d_fake_seg_output      = tf.concat(d_fake_seg_output , axis=0)
 
-        source_images_batch_color    = (1.+source_images_batch   ) / 2.
-        source_segments_batch_color  = (1.+source_segments_batch ) / 2.
-        fake_1_segments_output_color = (1.+fake_1_segments_output) / 2.
-        fake_2_segments_output_color = (1.+fake_2_segments_output) / 2.
-        fake_1_images_output_color   = (1.+fake_1_images_output  ) / 2.
-        fake_2_images_output_color   = (1.+fake_2_images_output  ) / 2.
+        source_data_color = [
+            (1.+source_images_batch   ) / 2.,         # source_images_batch_color
+            (1.+source_segments_batch ) / 2.,         # source_segments_batch_color
+            (1.+fake_1_segments_output) / 2.,         # fake_1_segments_output_color
+            (1.+fake_2_segments_output) / 2.,         # fake_2_segments_output_color
+            (1.+fake_1_images_output  ) / 2.,         # fake_1_images_output_color
+            (1.+fake_2_images_output  ) / 2.,         # fake_2_images_output_color
+            ]
+
+        # ---[ Validation Model
+        target_data_color_queue = []
+        for target_data in target_data_queue:
+            with tf.device('/device:GPU:{}'.format((2) % config['gpus'])):
+                fake_seg  = generator(target_data[0], output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
+                fake_img_ = generator(fake_seg, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
+                fake_img  = generator(target_data[1], output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_B2A_NAME)
+                fake_seg_ = generator(fake_img, output_channel=3, reuse=tf.AUTO_REUSE, phase_train=True, scope=GEN_A2B_NAME)
+
+            target_data_color_queue.append([
+                    (1.+target_data[0]) / 2.,     # target_images_batch_color
+                    (1.+target_data[1]) / 2.,     # target_segments_batch_color
+                    (1.+fake_seg ) / 2.,          # val_fake_1_segments_output_color
+                    (1.+fake_seg_) / 2.,          # val_fake_2_segments_output_color
+                    (1.+fake_img ) / 2.,          # val_fake_1_images_output_color
+                    (1.+fake_img_) / 2.,          # val_fake_2_images_output_color
+                    ])
 
         # ---[ Segment-level loss: pixelwise loss
         # d_seg_batch = tf.image.resize_nearest_neighbor(seg_gt, tf.shape(_d_real['segment'])[1:3])
@@ -307,10 +345,11 @@ class CYCLEGAN:
         d_loss = \
                 (da_loss + db_loss) / 2.
 
-        num_da_real_img_acc = tf.size( tf.where(tf.nn.sigmoid(d_real_img_output) > 0.7)[:,0], name='num_da_real_img_acc' )
-        num_da_fake_img_acc = tf.size( tf.where(tf.nn.sigmoid(d_fake_img_output) < 0.3)[:,0], name='num_da_fake_img_acc' )
-        num_db_real_seg_acc = tf.size( tf.where(tf.nn.sigmoid(d_real_seg_output) > 0.7)[:,0], name='num_db_real_seg_acc' )
-        num_db_fake_seg_acc = tf.size( tf.where(tf.nn.sigmoid(d_fake_seg_output) < 0.3)[:,0], name='num_db_fake_seg_acc' )
+        # D will output [BATCH_SIZE, 32, 32, 1]
+        num_da_real_img_acc = tf.size( tf.where(tf.reduce_mean(tf.nn.sigmoid(d_real_img_output), axis=[1,2,3]) > 0.5)[:,0], name='num_da_real_img_acc' )
+        num_da_fake_img_acc = tf.size( tf.where(tf.reduce_mean(tf.nn.sigmoid(d_fake_img_output), axis=[1,2,3]) < 0.5)[:,0], name='num_da_fake_img_acc' )
+        num_db_real_seg_acc = tf.size( tf.where(tf.reduce_mean(tf.nn.sigmoid(d_real_seg_output), axis=[1,2,3]) > 0.5)[:,0], name='num_db_real_seg_acc' )
+        num_db_fake_seg_acc = tf.size( tf.where(tf.reduce_mean(tf.nn.sigmoid(d_fake_seg_output), axis=[1,2,3]) < 0.5)[:,0], name='num_db_fake_seg_acc' )
 
         ## limit weights to 0
         #g_weight_regularizer = [0.0001 * tf.nn.l2_loss(v) for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, GEN_NAME) if 'weight' in v.name]
@@ -457,19 +496,29 @@ class CYCLEGAN:
                     writer.add_summary(save_summarys, iters)
                 # output samples
                 if epo % 5 == 0:
-                    seg_gt, seg_1, seg_2, img_gt, img_1, img_2 = \
-                            sess.run([source_segments_batch_color, fake_1_segments_output_color, fake_2_segments_output_color,
-                                      source_images_batch_color, fake_1_images_output_color, fake_2_images_output_color], feed_dict=feeds)
-                    #print ("Range %10s:" % "seg_gt", seg_gt.min(), seg_gt.max())
-                    #print ("Range %10s:" % "seg_1", seg_1.min(), seg_1.max())
-                    #print ("Range %10s:" % "seg_2", seg_2.min(), seg_2.max())
-                    #print ("Range %10s:" % "img_gt", img_gt.min(), img_gt.max())
-                    #print ("Range %10s:" % "img_1", img_1.min(), img_1.max())
-                    #print ("Range %10s:" % "img_2", img_2.min(), img_2.max())
+                    img_gt, seg_gt, seg_1, seg_2, img_1, img_2 = sess.run(source_data_color)
+                    print ("Range %10s:" % "seg_gt", seg_gt.min(), seg_gt.max())
+                    print ("Range %10s:" % "seg_1", seg_1.min(), seg_1.max())
+                    print ("Range %10s:" % "seg_2", seg_2.min(), seg_2.max())
+                    print ("Range %10s:" % "img_gt", img_gt.min(), img_gt.max())
+                    print ("Range %10s:" % "img_1", img_1.min(), img_1.max())
+                    print ("Range %10s:" % "img_2", img_2.min(), img_2.max())
                     seg_output = np.concatenate([seg_gt, seg_2, seg_1], axis=0)
                     img_output = np.concatenate([img_gt, img_2, img_1], axis=0)
-                    save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'seg-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
-                    save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'img-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
+                    save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'tr-seg-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
+                    save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'tr-img-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
+                    for i,target_data_color in enumerate(target_data_color_queue):
+                        val_img_gt, val_seg_gt, val_seg_1, val_seg_2, val_img_1, val_img_2 = sess.run(target_data_color)
+                        print ("Val Range %10s:" % "seg_gt", val_seg_gt.min(), val_seg_gt.max())
+                        print ("Val Range %10s:" % "seg_1", val_seg_1.min(), val_seg_1.max())
+                        print ("Val Range %10s:" % "seg_2", val_seg_2.min(), val_seg_2.max())
+                        print ("Val Range %10s:" % "img_gt", val_img_gt.min(), val_img_gt.max())
+                        print ("Val Range %10s:" % "img_1", val_img_1.min(), val_img_1.max())
+                        print ("Val Range %10s:" % "img_2", val_img_2.min(), val_img_2.max())
+                        val_seg_output = np.concatenate([val_seg_gt, val_seg_2, val_seg_1], axis=0)
+                        val_img_output = np.concatenate([val_img_gt, val_img_2, val_img_1], axis=0)
+                        save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'val{}-seg-1gt_2mapback_3map-{}.jpg'.format(i,iters)), size=[3, config['batch_size']])
+                        save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'val{}-img-1gt_2mapback_3map-{}.jpg'.format(i,iters)), size=[3, config['batch_size']])
 
                 writer.flush()
             writer.close()
