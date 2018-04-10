@@ -36,11 +36,11 @@ def get_arguments():
 
     parser.add_argument("--bs",             type=int,  default=12,
                                             help="[%(default)s]")
-    parser.add_argument("--crop_size",      type=str,  default='713,713',
+    parser.add_argument("--crop_size",      type=str,  default='1024,2048',
                                             help="[%(default)s]")
     parser.add_argument("--resize",         type=str,  default='256,256',
                                             help="[%(default)s]")
-    parser.add_argument("--random_scale",   type=str2bool, default=True,
+    parser.add_argument("--random_scale",   type=str2bool, default=False,
                                             help="[%(default)s]")
 
     parser.add_argument("--print_epoch",    type=int,  default=100,
@@ -61,14 +61,16 @@ def get_arguments():
                                             help="L1 lambda for D G loss [%(default)s]")
     parser.add_argument("--gpus",           type=int,  default=4,
                                             help="[%(default)s]")
+    parser.add_argument("--loss_mode",      type=str,  default=None,
+                                            help="'lsgan', 'sigmoidCE' [%(default)s]")
     #parser.add_argument("--num_threads",    type=int,  default=32,
                                             #help="[%(default)s]")
-    parser.add_argument("--result_dir",     type=str,  default='results/',
-                                            help="[%(default)s]")
-    parser.add_argument("--summary_dir",    type=str,  default='summary/',
-                                            help="[%(default)s]")
+    parser.add_argument("--result_dir",     type=str,  default=None,
+                                            help="ex: results/ [%(default)s]")
+    parser.add_argument("--summary_dir",    type=str,  default=None,
+                                            help="ex: summary/ [%(default)s]")
     parser.add_argument("--name",           type=str,  default=None,
-                                            help="[%(default)s]")
+                                            help="ex: cyclegan [%(default)s]")
     #parser.add_argument("--train",         action="store_true",            # `store_true`: default=False, `store_false`: default=True
                                             #help="[%(default)s]")           ; parser.set_defaults(random_scale=True)
     return parser.parse_args()

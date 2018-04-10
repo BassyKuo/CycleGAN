@@ -45,10 +45,11 @@ class CYCLEGAN:
             #optimizer                   = {'eval': 'AdamOptimizer', 'args':{'beta1':0., 'beta2':0.9}},
             lm                          = 10,
             gpus                        = 4,
+            loss_mode                   = 'sigmoid_cross_entropy',  #['lsgan', 'sce'/'basic']
             num_threads                 = 32,
             result_dir                  = 'results',
             summary_dir                 = 'summary',
-            suffix                      = 'r1.1.0-sce_loss.tr_and_val', 
+            suffix                      = 'r2.1.0-sce_loss__Recover-fake_2_seg__Recover-fake_2_img', 
             name                        = 'CycleGAN-rgb2rgb',
             **kwargs):
 
@@ -72,6 +73,7 @@ class CYCLEGAN:
         #self.optimizer                  = optimizer
         self.L1_lambda                  = lm
         self.gpus                       = gpus
+        self.loss_mode                  = loss_mode
         self.result_dir                 = result_dir
         self.summary_dir                = summary_dir
         self.name                       = name
@@ -321,27 +323,40 @@ class CYCLEGAN:
         #grads_penalty = tf.reduce_mean(tf.square(slopes-1), name='grads_penalty')
         #d_loss = d_loss_old + LAMBDA * grads_penalty
 
-        # ---[ GAN loss: sigmoid BCE loss
-        _img_recovery = config['L1_lambda'] * tf.reduce_mean(tf.abs(source_images_batch - fake_2_images_output))
-        _seg_recovery = config['L1_lambda'] * tf.reduce_mean(tf.abs(source_segments_batch - fake_1_segments_output))
+
+        def sigmoid_cross_entropy(labels, logits):
+            return tf.reduce_mean( tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits) )
+        def least_square(labels, logits):
+            return tf.reduce_mean( (labels - logits) ** 2 )
+
+        if config['loss_mode'] == 'lsgan':
+            # ---[ GAN loss: LSGAN loss (chi-square, or called least-square)
+            loss_func = least_square
+        else:
+            # ---[ GAN loss: sigmoid BCE loss
+            loss_func = sigmoid_cross_entropy
+
+        # ---[ LOSS
+        _img_recovery = config['L1_lambda'] * tf.reduce_mean( tf.abs(source_images_batch - fake_2_images_output) )
+        _seg_recovery = config['L1_lambda'] * tf.reduce_mean( tf.abs(source_segments_batch - fake_2_segments_output) )
 
         g_loss_a2b = \
-                tf.reduce_mean( tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_fake_seg_output), logits=d_fake_seg_output) ) + \
+                loss_func( labels=tf.ones_like(d_fake_seg_output), logits=d_fake_seg_output ) + \
                 _img_recovery + _seg_recovery
         g_loss_b2a = \
-                tf.reduce_mean( tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_fake_img_output), logits=d_fake_img_output) ) + \
+                loss_func( labels=tf.ones_like(d_fake_img_output), logits=d_fake_img_output ) + \
                 _img_recovery + _seg_recovery
         g_loss = \
-                tf.reduce_mean( tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_fake_seg_output), logits=d_fake_seg_output) ) + \
-                tf.reduce_mean( tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_fake_img_output), logits=d_fake_img_output) ) + \
+                loss_func( labels=tf.ones_like(d_fake_seg_output), logits=d_fake_seg_output ) + \
+                loss_func( labels=tf.ones_like(d_fake_img_output), logits=d_fake_img_output ) + \
                 _img_recovery + _seg_recovery
 
-        da_loss = tf.reduce_mean(
-                tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_real_img_output),  logits=d_real_img_output) + \
-                tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(d_fake_img_output), logits=d_fake_img_output))
-        db_loss = tf.reduce_mean(
-                tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(d_real_seg_output),  logits=d_real_seg_output) + \
-                tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(d_fake_seg_output), logits=d_fake_seg_output))
+        da_loss = \
+                loss_func( labels=tf.ones_like(d_real_img_output), logits=d_real_img_output ) + \
+                loss_func( labels=tf.zeros_like(d_fake_img_output), logits=d_fake_img_output )
+        db_loss = \
+                loss_func( labels=tf.ones_like(d_real_seg_output), logits=d_real_seg_output ) + \
+                loss_func( labels=tf.zeros_like(d_fake_seg_output), logits=d_fake_seg_output )
         d_loss = \
                 (da_loss + db_loss) / 2.
 
@@ -503,10 +518,12 @@ class CYCLEGAN:
                     print ("Range %10s:" % "img_gt", img_gt.min(), img_gt.max())
                     print ("Range %10s:" % "img_1", img_1.min(), img_1.max())
                     print ("Range %10s:" % "img_2", img_2.min(), img_2.max())
-                    seg_output = np.concatenate([seg_gt, seg_2, seg_1], axis=0)
-                    img_output = np.concatenate([img_gt, img_2, img_1], axis=0)
-                    save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'tr-seg-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
-                    save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'tr-img-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
+                    _output = np.concatenate([img_gt, seg_gt, seg_1, img_1, img_2, seg_2], axis=0)
+                    save_visualization(_output, save_path=os.path.join(config['result_dir'], 'tr-{}.jpg'.format(iters)), size=[3, 2*config['batch_size']])
+                    #seg_output = np.concatenate([seg_gt, seg_2, seg_1], axis=0)
+                    #img_output = np.concatenate([img_gt, img_2, img_1], axis=0)
+                    #save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'tr-seg-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
+                    #save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'tr-img-1gt_2mapback_3map-{}.jpg'.format(iters)), size=[3, config['batch_size']])
                     for i,target_data_color in enumerate(target_data_color_queue):
                         val_img_gt, val_seg_gt, val_seg_1, val_seg_2, val_img_1, val_img_2 = sess.run(target_data_color)
                         print ("Val Range %10s:" % "seg_gt", val_seg_gt.min(), val_seg_gt.max())
@@ -515,10 +532,12 @@ class CYCLEGAN:
                         print ("Val Range %10s:" % "img_gt", val_img_gt.min(), val_img_gt.max())
                         print ("Val Range %10s:" % "img_1", val_img_1.min(), val_img_1.max())
                         print ("Val Range %10s:" % "img_2", val_img_2.min(), val_img_2.max())
-                        val_seg_output = np.concatenate([val_seg_gt, val_seg_2, val_seg_1], axis=0)
-                        val_img_output = np.concatenate([val_img_gt, val_img_2, val_img_1], axis=0)
-                        save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'val{}-seg-1gt_2mapback_3map-{}.jpg'.format(i,iters)), size=[3, config['batch_size']])
-                        save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'val{}-img-1gt_2mapback_3map-{}.jpg'.format(i,iters)), size=[3, config['batch_size']])
+                        _output = np.concatenate([val_img_gt, val_seg_gt, val_seg_1, val_img_1, val_img_2, val_seg_2], axis=0)
+                        save_visualization(_output, save_path=os.path.join(config['result_dir'], 'val{}-{}.jpg'.format(i,iters)), size=[3, 2*config['batch_size']])
+                        #val_seg_output = np.concatenate([val_seg_gt, val_seg_2, val_seg_1], axis=0)
+                        #val_img_output = np.concatenate([val_img_gt, val_img_2, val_img_1], axis=0)
+                        #save_visualization(seg_output, save_path=os.path.join(config['result_dir'], 'val{}-seg-1gt_2mapback_3map-{}.jpg'.format(i,iters)), size=[3, config['batch_size']])
+                        #save_visualization(img_output, save_path=os.path.join(config['result_dir'], 'val{}-img-1gt_2mapback_3map-{}.jpg'.format(i,iters)), size=[3, config['batch_size']])
 
                 writer.flush()
             writer.close()
